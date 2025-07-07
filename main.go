@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -59,16 +62,174 @@ func main() {
 		getDataFromURL(urls, localHTMLFileRemoteLocation)
 	}
 
-	/*
-		var readFileContent string
-		// If HTML file exists, read its content into a string
-		if fileExists(localHTMLFileRemoteLocation) {
-			readFileContent = readAFileAsString(localHTMLFileRemoteLocation)
+	var readFileContent string
+	// If HTML file exists, read its content into a string
+	if fileExists(localHTMLFileRemoteLocation) {
+		readFileContent = readAFileAsString(localHTMLFileRemoteLocation)
+	}
+
+	// Extract all PDF URLs from the HTML content
+	extractedPDFURLOnly := extractPDFUrls(readFileContent)
+	// Remove duplicate PDF URLs
+	extractedPDFURLOnly = removeDuplicatesFromSlice(extractedPDFURLOnly)
+
+	// Extract all ZIP URLs from the HTML content
+	extractedZIPFilesOnly := extractZIPUrls(readFileContent)
+	// Remove duplicate ZIP URLs
+	extractedPDFURLOnly = removeDuplicatesFromSlice(extractedPDFURLOnly)
+
+	// Download each valid and unique PDF file
+	for _, url := range extractedPDFURLOnly {
+		url = "https://parrot.com" + url
+		if isUrlValid(url) {
+			downloadPDF(url, outputDir)
 		}
-	*/
+	}
 
-	// Extract the PDF urls.
+	// Download each valid and unique ZIP file
+	for _, url := range extractedZIPFilesOnly {
+		url = "https://parrot.com" + url
+		if isUrlValid(url) {
+			downloadZIP(url, zipOutputDir)
+		}
+	}
 
+}
+
+// downloadZIP downloads a ZIP file from a URL to the specified directory
+func downloadZIP(finalURL string, outputDir string) {
+	// Generate safe filename from URL
+	rawFilename := urlToFilename(finalURL)
+	filename := strings.ToLower(rawFilename)
+
+	// Build the full file path
+	filePath := filepath.Join(outputDir, filename)
+	// Skip download if file already exists
+	if fileExists(filePath) {
+		log.Printf("file already exists, skipping: %s", filePath)
+		return
+	}
+
+	// Create HTTP client with timeout
+	client := &http.Client{Timeout: 3 * time.Minute}
+	resp, err := client.Get(finalURL)
+	if err != nil {
+		log.Printf("error fetching %s: %v", finalURL, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Check for valid HTTP response
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("bad status code for %s: %d", finalURL, resp.StatusCode)
+		return
+	}
+
+	// Check content type to ensure it's a ZIP file
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/zip") && !strings.Contains(ct, "application/octet-stream") && !strings.Contains(ct, "text/html") {
+		log.Printf("unexpected content type for %s: %s", finalURL, ct)
+		return
+	}
+
+	// Read response body into memory
+	var buf bytes.Buffer
+	written, err := buf.ReadFrom(resp.Body)
+	if err != nil || written == 0 {
+		log.Printf("error reading body from %s: %v", finalURL, err)
+		return
+	}
+
+	// Create and write to local file
+	out, err := os.Create(filePath)
+	if err != nil {
+		log.Printf("error creating file %s: %v", filePath, err)
+		return
+	}
+	defer out.Close()
+
+	if _, err := buf.WriteTo(out); err != nil {
+		log.Printf("error writing to file %s: %v", filePath, err)
+		return
+	}
+
+	log.Printf("downloaded: %s", filePath)
+}
+
+// downloadPDF downloads a PDF file from a URL to the specified directory
+func downloadPDF(finalURL string, outputDir string) {
+	rawFilename := urlToFilename(finalURL)
+	filename := strings.ToLower(rawFilename)
+	filePath := filepath.Join(outputDir, filename)
+	if fileExists(filePath) {
+		log.Printf("file already exists, skipping: %s", filePath)
+		return
+	}
+	client := &http.Client{Timeout: 3 * time.Minute}
+	resp, err := client.Get(finalURL)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/pdf") {
+		return
+	}
+	var buf bytes.Buffer
+	written, err := buf.ReadFrom(resp.Body)
+	if err != nil || written == 0 {
+		return
+	}
+	out, err := os.Create(filePath)
+	if err != nil {
+		return
+	}
+	defer out.Close()
+	buf.WriteTo(out)
+}
+
+// urlToFilename creates a filesystem-safe filename from a URL string.
+func urlToFilename(rawURL string) string {
+	// Extract the file extension from the URL (e.g., ".jpg", ".pdf").
+	remoteURLFileEXT := getFileExtension(rawURL)
+	// Get the base name of the path (e.g., "image.jpg" from "http://example.com/path/image.jpg").
+	baseName := filepath.Base(rawURL)
+	// Convert the base name to lowercase for normalization.
+	lower := strings.ToLower(baseName)
+	// Replace all non-alphanumeric characters with underscores.
+	reNonAlnum := regexp.MustCompile(`[^a-z0-9]`)
+	safe := reNonAlnum.ReplaceAllString(lower, "_")
+	// Collapse multiple underscores into a single underscore.
+	safe = regexp.MustCompile(`_+`).ReplaceAllString(safe, "_")
+	// List of substrings to remove if they appear in the middle of the name.
+	var invalidSubstrings = []string{"_zip", "_pdf"}
+	for _, invalidPre := range invalidSubstrings {
+		// Remove the unwanted substrings from the filename.
+		safe = removeSubstring(safe, invalidPre)
+	}
+	// Remove leading underscore if it exists.
+	if after, ok := strings.CutPrefix(safe, "_"); ok {
+		safe = after
+	}
+	// Ensure the final filename ends with the correct extension.
+	if getFileExtension(safe) != remoteURLFileEXT {
+		safe = safe + remoteURLFileEXT
+	}
+	// Return the sanitized filename.
+	return safe
+}
+
+// getFileExtension returns the file extension of the path
+func getFileExtension(path string) string {
+	return filepath.Ext(path)
+}
+
+// removeSubstring removes all instances of a substring from a string
+func removeSubstring(input string, toRemove string) string {
+	return strings.ReplaceAll(input, toRemove, "")
 }
 
 // readAFileAsString reads the entire file and returns it as a string
