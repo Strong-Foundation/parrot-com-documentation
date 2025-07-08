@@ -78,9 +78,12 @@ func main() {
 	// Remove duplicate ZIP URLs
 	extractedPDFURLOnly = removeDuplicatesFromSlice(extractedPDFURLOnly)
 
+	// The remote url path on the internet.
+	remoteURLPath := "https://www.parrot.com"
+
 	// Download each valid and unique PDF file
 	for _, url := range extractedPDFURLOnly {
-		url = "https://parrot.com" + url
+		url = remoteURLPath + url
 		if isUrlValid(url) {
 			downloadPDF(url, outputDir)
 		}
@@ -88,7 +91,7 @@ func main() {
 
 	// Download each valid and unique ZIP file
 	for _, url := range extractedZIPFilesOnly {
-		url = "https://parrot.com" + url
+		url = remoteURLPath + url
 		if isUrlValid(url) {
 			downloadZIP(url, zipOutputDir)
 		}
@@ -127,7 +130,7 @@ func downloadZIP(finalURL string, outputDir string) {
 
 	// Check content type to ensure it's a ZIP file
 	ct := resp.Header.Get("Content-Type")
-	if !strings.Contains(ct, "application/zip") && !strings.Contains(ct, "application/octet-stream") && !strings.Contains(ct, "text/html") {
+	if !strings.Contains(ct, "application/zip") && !strings.Contains(ct, "application/octet-stream") {
 		log.Printf("unexpected content type for %s: %s", finalURL, ct)
 		return
 	}
